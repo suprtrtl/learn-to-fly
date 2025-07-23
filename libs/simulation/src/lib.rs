@@ -1,12 +1,13 @@
 mod animal;
 mod animal_individual;
+mod brain;
 mod eye;
 mod food;
 mod world;
 
-pub use self::{animal::*, animal_individual::*, eye::*, food::*, world::*};
-use lib_neural_network as nn;
+pub use self::{animal::*, animal_individual::*, brain::*, eye::*, food::*, world::*};
 use lib_genetic_algorithm as ga;
+use lib_neural_network as nn;
 use nalgebra as na;
 use rand::{Rng, RngCore};
 // FRAC_PI_2 = PI / 2.0
@@ -52,9 +53,9 @@ impl Simulation {
         let world = World::random(rng);
 
         let ga = ga::GeneticAlgorithm::new(
-            ga::RouletteWheelSelection, 
+            ga::RouletteWheelSelection,
             ga::UniformCrossover,
-            ga::GaussianMutation::new(0.01, 0.3,),
+            ga::GaussianMutation::new(0.01, 0.3),
         );
 
         Self { world, ga, age: 0 }
@@ -65,7 +66,7 @@ impl Simulation {
     }
 
     /// Performs a single step in simulation
-    pub fn step(&mut self, rng: &mut dyn RngCore) {
+    pub fn step(&mut self, rng: &mut dyn RngCore) -> Option<ga::Statistics> {
         self.process_collisions(rng);
         self.process_brains();
         self.process_movements();
@@ -73,7 +74,18 @@ impl Simulation {
         self.age += 1;
 
         if self.age > GENERATION_LENGTH {
-            self.evolve(rng);
+            Some(self.evolve(rng))
+        } else {
+            None
+        }
+    }
+    
+    /// Fast forward until generation finished
+    pub fn train(&mut self,rng: &mut dyn RngCore) -> ga::Statistics {
+        loop {
+            if let Some(summary) = self.step(rng) {
+                return summary;
+            }
         }
     }
 
@@ -83,6 +95,7 @@ impl Simulation {
                 let distance = na::distance(&animal.position(), &food.position());
 
                 if distance <= 0.01 {
+                    animal.satiation += 1;
                     food.position = rng.gen();
                 }
             }
@@ -91,13 +104,12 @@ impl Simulation {
 
     fn process_brains(&mut self) {
         for animal in &mut self.world.animals {
-            let vision = animal.eye.process_vision(
-                animal.position, 
-                animal.rotation,
-                &self.world.foods
-            );
+            let vision =
+                animal
+                    .eye
+                    .process_vision(animal.position, animal.rotation, &self.world.foods);
 
-            let response = animal.brain.propogate(vision);
+            let response = animal.brain.nn.propogate(vision);
 
             // Limit number to ranges
             let speed = response[0].clamp(-SPEED_ACCEL, SPEED_ACCEL);
@@ -117,22 +129,32 @@ impl Simulation {
         }
     }
 
-    fn evolve(&mut self, rng: &mut dyn RngCore) {
+    fn evolve(&mut self, rng: &mut dyn RngCore) -> ga::Statistics {
         self.age = 0;
-        
+
         // Step 1: prepare to send birds into genetic algo
-        let current_population = todo!();
+        let current_population: Vec<_> = self
+            .world
+            .animals
+            .iter()
+            .map(AnimalIndividual::from_animal)
+            .collect();
 
         // Step 2: evolve birds
-        let evolved_population = self.ga.evolve(rng, &current_population);
-       
+        let (evolved_population, stats) = self.ga.evolve(rng, &current_population);
+
         // Step 3: bring birds back from algo
-        self.world.animals = todo!();
+        self.world.animals = evolved_population
+            .into_iter()
+            .map(|individual| individual.into_animal(rng))
+            .collect();
 
         // Step 4: restart foods
         // for visual feedback (not neccesary)
         for food in &mut self.world.foods {
             food.position = rng.gen();
         }
+
+        stats
     }
 }
